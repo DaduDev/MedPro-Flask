@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>MedPro</title>
+    <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+    <style>
+        body {
+            background-color: #f8f9fa;
+        }
+        .container {
+            margin-top: 50px;
+        }
+        .card {
+            margin-top: 20px;
+        }
+        #alternatives {
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="row justify-content-center">
+            <div class="col-md-8">
+                <div class="card">
+                    <div class="card-body">
+                        <h1 class="card-title text-center">MedPro</h1>
+                        <form id="medicineForm" method="post" enctype="multipart/form-data">
+                            <div class="form-group">
+                                <label for="medicine_name">Medicine Name:</label>
+                                <input type="text" class="form-control" id="medicine_name" name="medicine_name" placeholder="Enter medicine name">
+                            </div>
+                            <div class="form-group">
+                                <label for="prescription_image">Prescription Image:</label>
+                                <input type="file" class="form-control-file" id="prescription_image" name="prescription_image">
+                            </div>
+                            <button type="submit" class="btn btn-primary btn-block">Submit</button>
+                        </form>
+                        <div id="alternatives">
+                            <h2>Alternatives:</h2>
+                            <div>
+                                <strong>Substitutes:</strong> <span id="substitutes"></span>
+                            </div>
+                            <div>
+                                <strong>Side Effects:</strong> <span id="sideEffects"></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('medicineForm').onsubmit = async function(event) {
+            event.preventDefault();
+
+            // Clear previous results
+            document.getElementById('substitutes').textContent = '';
+            document.getElementById('sideEffects').textContent = '';
+
+            const formData = new FormData();
+            const medicineName = document.getElementById('medicine_name').value;
+            const prescriptionFile = document.getElementById('prescription_image').files[0];
+
+            // Only append fields if they have values
+            if (medicineName) formData.append('medicine_name', medicineName);
+            if (prescriptionFile) formData.append('prescription_image', prescriptionFile);
+
+            try {
+                const response = await fetch('/get_alternatives', {
+                    method: 'POST',
+                    body: formData,
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! Status: ${response.status}`);
+                }
+
+                const data = await response.json();
+
+                if (data.error) {
+                    alert(data.error);
+                    return;
+                }
+
+                // Handle empty responses
+                document.getElementById('substitutes').textContent =
+                    data.substitutes.length > 0 ? data.substitutes.join(', ') : "None found";
+                document.getElementById('sideEffects').textContent =
+                    data.sideEffects.length > 0 ? data.sideEffects.join(', ') : "None found";
+
+            } catch (error) {
+                console.error('Fetch Error:', error);
+                alert('Failed to process request. Please check the console.');
+            }
+        };
+        </script>
+</body>
+</html>
