@@ -3,18 +3,75 @@ import pandas as pd
 import cv2
 import numpy as np
 from keras.models import load_model
-import pickle
-import imutils
+import json
 
 app = Flask(__name__)
 
 # Load the dataset
 dataset = pd.read_csv('medicine_dataset.csv')
-model = load_model('ocr.h5')
-with open('label_binarizer.pkl', 'rb') as f:
-    LB = pickle.load(f)
+
+# Load the new inference OCR model
+model = load_model('ocr_inference_model.h5')
+
+# Load the character mapping (num_to_char) from JSON
+with open('num_to_char.json', 'r') as f:
+    num_to_char = json.load(f)
+# Convert keys from string to int
+num_to_char = {int(k): v for k, v in num_to_char.items()}
+NUM_CLASSES = len(num_to_char) + 1  # Blank token is at index NUM_CLASSES - 1
+
+def decode_prediction(pred):
+    """
+    Decode the prediction using argmax and the character mapping.
+    Skips the blank token (assumed to be at index NUM_CLASSES - 1).
+    """
+    blank_token = NUM_CLASSES - 1
+    # Get the predicted indices for the first (and only) batch element
+    pred_indices = np.argmax(pred, axis=-1)[0]
+    out_str = ''
+    for idx in pred_indices:
+        if idx != blank_token:
+            out_str += num_to_char.get(idx, '')
+    return out_str
+
+def process_prescription(image_bytes):
+    """
+    Preprocess the uploaded image to match the OCR model's input:
+    - Decodes the image
+    - Converts to grayscale
+    - Resizes to (128, 32) [width x height]
+    - Normalizes pixel values
+    - Adds channel and batch dimensions
+    Then performs prediction and decodes the result.
+    """
+    try:
+        # Convert image bytes to a NumPy array and decode as grayscale
+        nparr = np.frombuffer(image_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            raise ValueError("Could not decode image")
+
+        # Resize image to match model input dimensions (width, height) = (128, 32)
+        img = cv2.resize(img, (128, 32))
+        # Normalize the image
+        img = img.astype("float32") / 255.0
+        # Add channel dimension (for grayscale) and batch dimension
+        img = np.expand_dims(img, axis=-1)  # shape becomes (32, 128, 1)
+        img = np.expand_dims(img, axis=0)    # shape becomes (1, 32, 128, 1)
+
+        # Predict using the OCR model
+        y_pred = model.predict(img)
+        decoded_text = decode_prediction(y_pred)
+        print("Decoded prescription text:", decoded_text)
+        return decoded_text
+    except Exception as e:
+        print(f"OCR Error: {str(e)}")
+        return ""
 
 def get_alternatives(medicine_name):
+    """
+    Searches the dataset for alternatives based on the given medicine name.
+    """
     medicine_name = medicine_name.strip().lower()
     medicine_data = dataset[dataset['name'].str.lower().str.contains(medicine_name)]
 
@@ -26,62 +83,6 @@ def get_alternatives(medicine_name):
 
     return {"substitutes": substitutes, "sideEffects": side_effects}
 
-def process_prescription(image_bytes):
-    try:
-        letters, _ = get_letters(image_bytes)
-        word = get_word(letters)
-        print(word)
-        return word
-    except Exception as e:
-        print(f"OCR Error: {str(e)}")
-        return ""
-
-def sort_contours(cnts, method="left-to-right"):
-    reverse = False
-    i = 0
-    if method == "right-to-left" or method == "bottom-to-top":
-        reverse = True
-    if method == "top-to-bottom" or method == "bottom-to-top":
-        i = 1
-    boundingBoxes = [cv2.boundingRect(c) for c in cnts]
-    (cnts, boundingBoxes) = zip(*sorted(zip(cnts, boundingBoxes),
-    key=lambda b:b[1][i], reverse=reverse))
-    return (cnts, boundingBoxes)
-
-def get_letters(image_data):
-    nparr = np.frombuffer(image_data, np.uint8)
-    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
-    if image is None:
-        raise ValueError("Could not decode image")
-
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    _, thresh1 = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY_INV)
-    dilated = cv2.dilate(thresh1, None, iterations=2)
-
-    cnts = cv2.findContours(dilated.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    cnts = imutils.grab_contours(cnts)
-    cnts = sort_contours(cnts, method="left-to-right")[0]
-
-    letters = []
-    for c in cnts:
-        if cv2.contourArea(c) > 10:
-            (x, y, w, h) = cv2.boundingRect(c)
-            roi = gray[y:y+h, x:x+w]
-            thresh = cv2.threshold(roi, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)[1]
-            thresh = cv2.resize(thresh, (32, 32), interpolation=cv2.INTER_CUBIC)
-            thresh = thresh.astype("float32") / 255.0
-            thresh = np.expand_dims(thresh, axis=-1)
-            thresh = thresh.reshape(1, 32, 32, 1)
-            ypred = model.predict(thresh, verbose=0)
-            ypred = LB.inverse_transform(ypred)
-            letters.append(ypred[0])
-
-    return letters, image
-
-def get_word(letter):
-    return "".join(letter).strip()
-
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -92,17 +93,16 @@ def get_alternatives_route():
         medicine_name = request.form.get('medicine_name', '').strip()
         prescription_file = request.files.get('prescription_image')
 
-        # Process image if uploaded
+        # If an image is uploaded, process it using the OCR model
         if prescription_file:
             image_bytes = prescription_file.read()
             prescription_text = process_prescription(image_bytes)
-            prescription_file.seek(0)  # Important for reusability
+            prescription_file.seek(0)  # For reusability if needed
             result = get_alternatives(prescription_text)
 
-        # Fallback to text input
+        # Otherwise, fall back to using the provided text input
         elif medicine_name:
             result = get_alternatives(medicine_name)
-
         else:
             return jsonify({"error": "Please provide either text or an image"}), 400
 
